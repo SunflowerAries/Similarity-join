@@ -1,0 +1,56 @@
+/home/gootter/pgsql/bin/pg_ctl -D /home/gootter/pgsql/data -l logfile stop
+
+./configure --enable-depend --enable-cassert --enable-debug CFLAGS="-O0" --prefix=$HOME/pgsql
+make
+make install
+$HOME/pgsql/bin/initdb -D $HOME/pgsql/data --locale=C
+
+/home/sunflower/pgsql/bin/pg_ctl -D /home/sunflower/pgsql/data -l logfile start
+
+$HOME/pgsql/bin/psql -p 5432 postgres -c 'CREATE DATABASE similarity;'
+$HOME/pgsql/bin/psql -p 5432 -d similarity -f $HOME/postgres/similarity_data.sql
+
+
+
+$HOME/pgsql/bin/psql postgres
+$HOME/pgsql/bin/psql similarity
+
+select levenshtein_distance('sunday', 'sunday');
+select levenshtein_distance('sunday', 'Monday');
+select levenshtein_distance('sunday', 'saturday');
+
+select jaccard_index('sunday', 'sunday');
+select jaccard_index('sunday', 'Monday');
+select jaccard_index('sunday', 'saturday');
+
+$HOME/pgsql/bin/psql -d 5432 similarity -c "select levenshtein_distance('sunday', 'sunday');"
+
+select count(*) from restaurantphone rp, addressphone ap where levenshtein_distance(rp.phone, ap.phone) < 4;
+select count(*) from restaurantaddress ra, restaurantphone rp where levenshtein_distance(ra.name, rp.name) < 3;
+select count(*) from restaurantaddress ra, addressphone ap where levenshtein_distance(ra.address, ap.address) < 4;
+
+3252 2130 2592
+
+select count(*) from restaurantphone rp, addressphone ap where jaccard_index(rp.phone, ap.phone) > .6;
+select count(*) from restaurantaddress ra, restaurantphone rp where jaccard_index(ra.name, rp.name) > .65;
+select count(*) from restaurantaddress ra, addressphone ap where jaccard_index(ra.address, ap.address) > .8;
+
+1653 2398 2186
+
+$HOME/pgsql/bin/psql similarity
+\timing
+SELECT ra.address, ap.address, ra.name, ap.phone FROM restaurantaddress ra, addressphone ap WHERE levenshtein_distance(ra.address, ap.address) < 4 AND (ap.address LIKE '% Berkeley%' OR ap.address LIKE '% Oakland %') ORDER BY 1, 2, 3, 4;
+
+SELECT rp.phone, ap.phone, rp.name, ap.address FROM restaurantphone rp, addressphone ap WHERE jaccard_index(rp.phone, ap.phone) > .6 AND (ap.address LIKE '% Berkeley%' OR ap.address LIKE '% Oakland %') ORDER BY 1, 2, 3, 4;
+
+SELECT ra.name, rp.name, ra.address, ap.address, rp.phone, ap.phone FROM restaurantphone rp, restaurantaddress ra, addressphone ap WHERE jaccard_index(rp.phone, ap.phone) >= .55 AND levenshtein_distance(rp.name, ra.name) <= 5 AND jaccard_index(ra.address, ap.address) >= .6 AND (ap.address LIKE '% Berkeley%' OR ap.address LIKE '% Oakland %')ORDER BY 1, 2, 3, 4, 5, 6;
+
+$HOME/pgsql/bin/psql -p 5432 similarity -c "SELECT ra.address, ap.address, ra.name, ap.phone FROM restaurantaddress ra, addressphone ap WHERE levenshtein_distance(ra.address, ap.address) < 4 AND (ap.address LIKE '% Berkeley%' OR ap.address LIKE '% Oakland %') ORDER BY 1, 2, 3, 4;" > levenshtein.txt
+
+$HOME/pgsql/bin/psql -p 5432 similarity -c "SELECT rp.phone, ap.phone, rp.name, ap.address FROM restaurantphone rp, addressphone ap WHERE jaccard_index(rp.phone, ap.phone) > .6 AND (ap.address LIKE '% Berkeley%' OR ap.address LIKE '% Oakland %') ORDER BY 1, 2, 3, 4;" > jaccard.txt
+
+$HOME/pgsql/bin/psql -p 5432 similarity -c "SELECT ra.name, rp.name, ra.address, ap.address, rp.phone, ap.phone FROM restaurantphone rp, restaurantaddress ra, addressphone ap WHERE jaccard_index(rp.phone, ap.phone) >= .55 AND levenshtein_distance(rp.name, ra.name) <= 5 AND jaccard_index(ra.address, ap.address) >= .6 AND (ap.address LIKE '% Berkeley%' OR ap.address LIKE '% Oakland %')ORDER BY 1, 2, 3, 4, 5, 6;" > combined.txt
+
+\timing
+SELECT count(*) FROM restaurantaddress ra, restaurantphone rp WHERE ra.name = rp.name;
+
