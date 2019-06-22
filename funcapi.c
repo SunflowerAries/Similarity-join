@@ -1518,7 +1518,7 @@ int mymin(int a, int b, int c)
 
 Datum levenshtein_distance(PG_FUNCTION_ARGS)
 {
-    text * str_01 = PG_GETARG_DATUM(0);
+    text *str_01 = PG_GETARG_DATUM(0);
     text *txt_02 = PG_GETARG_DATUM(1);
 
     char *str1 = TextDatumGetCString(str_01);
@@ -1527,38 +1527,59 @@ Datum levenshtein_distance(PG_FUNCTION_ARGS)
     char *p = NULL;
     char s[150];
     char t[150];
-    int distance[150][150];//(1 + len1) * (1 + len2)
-    int temp;
-
-    for(temp = 1, p = str1; *p != '\0'; temp++, p++)
-        if(*p >= 97 && *p <= 122)
-            s[temp] = *p - 32;
+    int distance[150][2];//(1 + len1) * (1 + len2)
+	int flag;
+	// TODO minimize the size of the table. For example, use a N*3 table
+	// TODO the upper is not necessary
+    for(int temp = 1, p = str1; *p != '\0'; temp++, p++)
+    {
+		int a=*p;
+		if( a >= 97 )
+            s[temp] = a - 32;
         else
-            s[temp] = *p;
+            s[temp] = a;
+	}
     len1 = temp;
 
-    for(temp = 1, p = str2; *p != '\0'; temp++, p++)
-        if(*p >= 97 && *p <= 122)
-            t[temp] = *p - 32;
+    for(int temp = 1, p = str2; *p != '\0'; temp++, p++)
+    {
+		int a=*p;
+		if( a >= 97 )
+            t[temp] = a - 32;
         else
-            t[temp] = *p;
-    len2 = temp;
+            t[temp] = a;
+	}
+	len2 = temp;
 
     for(int i = 0; i <= len1; i++)
         distance[i][0] = i;
 
-    for(int j = 0; j <= len2; j++)
-        distance[0][j] = j;
-
-    for(int i = 1; i <= len1; i++)
-        for(int j = 1; j <= len2; j++)
-            if(s[i] == t[j])
-                distance[i][j] = distance[i - 1][j - 1];
-            else
-                distance[i][j] = mymin(distance[i - 1][j] + 1, //insert
-                                     distance[i][j - 1] + 1, //delete
-                                     distance[i - 1][j - 1] + 1); //substitute
-    int32 result = distance[len1][len2];
+	int pre=1;
+	int bef=0;
+    for(int j = 1; j <= len2; j++)
+    {
+		distance[0][pre]=j;
+		for(int i = 1; i <= len1; i++)
+        {
+			if(s[i] == t[j])
+        	    distance[i][pre] = distance[i - 1][pre];
+        	else
+        	    {
+					int distance = mymin(distance[i - 1][pre] + 1, //insert
+        	                         distance[i][bef] + 1, //delete
+        	                         distance[i - 1][bef] + 1); //substitute
+					if(distance>50)
+					{
+						distance[len1][len2]=50;
+						goto L1;
+					}
+				}
+		}
+		bef=pre;
+		pre=1-pre;
+	}
+	L1:
+	int32 result = distance[len1][len2];
     PG_RETURN_INT32(result);
 }
 
