@@ -1511,6 +1511,57 @@ extract_variadic_args(FunctionCallInfo fcinfo, int variadic_start,
 	return nargs;
 }
 
+int mymin(int a, int b, int c)
+{
+    return min(min(a, b), c);
+}
+
+Datum levenshtein_distance(PG_FUNCTION_ARGS)
+{
+    text * str_01 = PG_GETARG_DATUM(0);
+    text *txt_02 = PG_GETARG_DATUM(1);
+
+    char *str1 = TextDatumGetCString(str_01);
+    char *str2 = TextDatumGetCString(txt_02);
+    int len1 = 0, len2 = 0;
+    char *p = NULL;
+    char s[150];
+    char t[150];
+    int distance[150][150];//(1 + len1) * (1 + len2)
+    int temp;
+
+    for(temp = 1, p = str1; *p != '\0'; temp++, p++)
+        if(*p >= 97 && *p <= 122)
+            s[temp] = *p - 32;
+        else
+            s[temp] = *p;
+    len1 = temp - 1;
+
+    for(temp = 1, p = str2; *p != '\0'; temp++, p++)
+        if(*p >= 97 && *p <= 122)
+            t[temp] = *p - 32;
+        else
+            t[temp] = *p;
+    len2 = temp - 1;
+
+    for(int i = 0; i <= len1; i++)
+        distance[i][0] = i;
+
+    for(int j = 0; j <= len2; j++)
+        distance[0][j] = j;
+
+    for(int i = 1; i <= len1; i++)
+        for(int j = 1; j <= len2; j++)
+            if(s[i] == t[j])
+                distance[i][j] = distance[i - 1][j - 1];
+            else
+                distance[i][j] = mymin(distance[i - 1][j] + 1, //insert
+                                     distance[i][j - 1] + 1, //delete
+                                     distance[i - 1][j - 1] + 1); //substitute
+    int32 result = distance[len1][len2];
+    PG_RETURN_INT32(result);
+}
+
 Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
 {
     text * str_01 = PG_GETARG_DATUM(0);
@@ -1524,9 +1575,10 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
     char s[150] = {0};
     char t[150] = {0};
     int que[20000][2];
-    int distance[150][150] = {0};//(1 + len1) * (1 + len2)
+    int distance[150][150];//(1 + len1) * (1 + len2)
     bool visit[150][150] = {0};
     int temp;
+
 
     for(temp = 1, p = str1; *p != '\0'; temp++, p++)
         if(*p >= 97 && *p <= 122)
@@ -1542,10 +1594,15 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
             t[temp] = *p;
     len2 = temp;
 
+    for(int i = 0; i < len1; i++)
+        for(int j = 0; j < len2; j++)
+            distance[i][j] = -1;
+
     int front = 0, end = 0;
     que[end][0] = 0;
     que[end++][1] = 0;
     visit[0][0] = 1;
+    distance[0][0] = 0;
     int i, j;
     while(front < end)
     {
@@ -1553,7 +1610,7 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
         j = que[front++][1];
         if(j + 1 < len2)
         {
-            if(distance[i][j + 1] != 0)
+            if(distance[i][j + 1] != -1)
                 distance[i][j + 1] = min(distance[i][j + 1], distance[i][j] + 1);
             else
                 distance[i][j + 1] = distance[i][j] + 1;
@@ -1567,7 +1624,7 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
 
         if(i + 1 < len1)
         {
-            if(distance[i + 1][j] != 0)
+            if(distance[i + 1][j] != -1)
                 distance[i + 1][j] = min(distance[i + 1][j], distance[i][j] + 1);
             else
                 distance[i + 1][j] = distance[i][j] + 1;
@@ -1581,10 +1638,20 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
 
         if(i + 1 < len1 && j + 1 < len2)
         {
-            if(s[i + 1] == t[j + 1])
-                distance[i + 1][j + 1] = distance[i][j];
+            if(distance[i + 1][j + 1] != -1)
+            {
+                if(s[i + 1] == t[j + 1])
+                    distance[i + 1][j + 1] = min(distance[i][j], distance[i + 1][j + 1]);
+                else
+                    distance[i + 1][j + 1] = min(distance[i][j] + 1, distance[i][j]);
+            }
             else
-                distance[i + 1][j + 1] = distance[i][j] + 1;
+            {
+                if(s[i + 1] == t[j + 1])
+                    distance[i + 1][j + 1] = distance[i][j];
+                else
+                    distance[i + 1][j + 1] = distance[i][j] + 1;
+            }
             if(distance[i + 1][j + 1] < tex && visit[i + 1][j + 1] == 0)
             {
                 que[end][0] = i + 1;
