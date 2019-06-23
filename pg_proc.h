@@ -5475,8 +5475,12 @@ DESCR("list files in the log directory");
 DATA(insert OID = 3354 (  pg_ls_waldir				 PGNSP PGUID 12 10 20 0 0 f f f f t t v s 0 0 2249 "" "{25,20,1184}" "{o,o,o}" "{name,size,modification}" _null_ _null_ pg_ls_waldir _null_ _null_ _null_ ));
 DESCR("list of files in the WAL directory");
 
-DATA(insert OID = 4375 ( levenshtein_distance PGNSP PGUID 12 1 0 0 0 f f f f t f i u 2 0 20 "25 25" _null_ _null_ _null_ _null_ _null_ levenshtein_distance _null_ _null_ _null_ ));
-DESCR("levenshtein_distance");
+
+/*DATA(insert OID = 4375 ( levenshtein_distance PGNSP PGUID 12 1 0 0 0 f f f f t f i u 2 0 20 "25 25" _null_ _null_ _null_ _null_ _null_ levenshtein_distance _null_ _null_ _null_ ));
+DESCR("levenshtein_distance");*/
+
+DATA(insert OID = 4377 ( levenshtein_distance_optimize PGNSP PGUID 12 1 0 0 0 f f f f t f i u 3 0 16 "25 25 23" _null_ _null_ _null_ _null_ _null_ levenshtein_distance_optimize _null_ _null_ _null_ ));
+DESCR("levenshtein_distance_optimize");
 
 DATA(insert OID = 4376 ( jaccard_index PGNSP PGUID 12 1 0 0 0 f f f f t f i u 2 0 700 "25 25" _null_ _null_ _null_ _null_ _null_ jaccard_index _null_ _null_ _null_ ));
 DESCR("jaccard_index");

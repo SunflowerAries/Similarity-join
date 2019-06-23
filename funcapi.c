@@ -1511,23 +1511,21 @@ extract_variadic_args(FunctionCallInfo fcinfo, int variadic_start,
 	return nargs;
 }
 
-int mymin(int a, int b, int c)
-{
-    return min(min(a, b), c);
-}
-
-Datum levenshtein_distance(PG_FUNCTION_ARGS)
+Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
 {
     text * str_01 = PG_GETARG_DATUM(0);
     text *txt_02 = PG_GETARG_DATUM(1);
+    int32 tex = PG_GETARG_INT32(2);
 
     char *str1 = TextDatumGetCString(str_01);
     char *str2 = TextDatumGetCString(txt_02);
     int len1 = 0, len2 = 0;
     char *p = NULL;
-    char s[150];
-    char t[150];
-    int distance[150][150];//(1 + len1) * (1 + len2)
+    char s[150] = {0};
+    char t[150] = {0};
+    int que[20000][2];
+    int distance[150][150] = {0};//(1 + len1) * (1 + len2)
+    bool visit[150][150] = {0};
     int temp;
 
     for(temp = 1, p = str1; *p != '\0'; temp++, p++)
@@ -1544,21 +1542,62 @@ Datum levenshtein_distance(PG_FUNCTION_ARGS)
             t[temp] = *p;
     len2 = temp;
 
-    for(int i = 0; i <= len1; i++)
-        distance[i][0] = i;
-
-    for(int j = 0; j <= len2; j++)
-        distance[0][j] = j;
-
-    for(int i = 1; i <= len1; i++)
-        for(int j = 1; j <= len2; j++)
-            if(s[i] == t[j])
-                distance[i][j] = distance[i - 1][j - 1];
+    int front = 0, end = 0;
+    que[end][0] = 0;
+    que[end++][1] = 0;
+    visit[0][0] = 1;
+    int i, j;
+    while(front < end)
+    {
+        i = que[front][0];
+        j = que[front++][1];
+        if(j + 1 < len2)
+        {
+            if(distance[i][j + 1] != 0)
+                distance[i][j + 1] = min(distance[i][j + 1], distance[i][j] + 1);
             else
-                distance[i][j] = mymin(distance[i - 1][j] + 1, //insert
-                                     distance[i][j - 1] + 1, //delete
-                                     distance[i - 1][j - 1] + 1); //substitute
-    int32 result = distance[len1][len2];
+                distance[i][j + 1] = distance[i][j] + 1;
+            if(distance[i][j + 1] < tex && visit[i][j + 1] == 0)
+            {
+                que[end][0] = i;
+                que[end++][1] = j + 1;
+                visit[i][j + 1] = 1;
+            }
+        }
+
+        if(i + 1 < len1)
+        {
+            if(distance[i + 1][j] != 0)
+                distance[i + 1][j] = min(distance[i + 1][j], distance[i][j] + 1);
+            else
+                distance[i + 1][j] = distance[i][j] + 1;
+            if(distance[i + 1][j] < tex && visit[i + 1][j] == 0)
+            {
+                que[end][0] = i + 1;
+                que[end++][1] = j;
+                visit[i + 1][j] = 1;
+            }
+        }
+
+        if(i + 1 < len1 && j + 1 < len2)
+        {
+            if(s[i + 1] == t[j + 1])
+                distance[i + 1][j + 1] = distance[i][j];
+            else
+                distance[i + 1][j + 1] = distance[i][j] + 1;
+            if(distance[i + 1][j + 1] < tex && visit[i + 1][j + 1] == 0)
+            {
+                que[end][0] = i + 1;
+                que[end++][1] = j + 1;
+                visit[i + 1][j + 1] = 1;
+            }
+        }
+    }
+    bool result;
+    if(i == len1 - 1 && j == len2 - 1)
+        result = 1;
+    else
+        result = 0;
     PG_RETURN_INT32(result);
 }
 
@@ -1569,6 +1608,8 @@ Datum jaccard_index (PG_FUNCTION_ARGS)
 
     char *str1 = TextDatumGetCString(str_01);
     char *str2 = TextDatumGetCString(txt_02);
+
+
     char newstr1[120];
     char newstr2[120];
     char *temp = NULL;
@@ -1576,60 +1617,46 @@ Datum jaccard_index (PG_FUNCTION_ARGS)
 
     newstr1[0] = '$';
     for(k = 1, temp = str1; *temp != '\0'; temp++, k++)
-        newstr1[k] = *temp;
+        if(*temp >= 97 && *temp <= 122)
+            newstr1[k] = *temp - 32;
+        else
+            newstr1[k] = *temp;
     newstr1[k] = '$';
     newstr1[k + 1] = '\0';
+
     newstr2[0] = '$';
     for(k = 1, temp = str2; *temp != '\0'; temp++, k++)
-        newstr2[k] = *temp;
+        if(*temp >= 97 && *temp <= 122)
+            newstr2[k] = *temp - 32;
+        else
+            newstr2[k] = *temp;
     newstr2[k] = '$';
     newstr2[k + 1] = '\0';
 
-    int hash[149][10][2]; // TODO
-    int inds[149] = {0};
-    int indt[149] = {0};
+    bool visit[32768][2] = {0};
     char *p = NULL;
     int sum = 0;
     int join = 0;
-
     for(p = newstr1; *(p + 1)!= '\0'; p++)
     {
         int a = *p;
         int b = *(p + 1);
-        int h = (10 * a + b) % 149;
-        int i;
-        for(i = 0; i <= inds[h]; i++)
-            if(hash[h][i][0] == a && hash[h][i][1] == b)
-                break;
-        if(i > inds[h])
-        {
-            hash[h][i][0] = a;
-            hash[h][i][1] = b;
-            inds[h] = i;
-            sum++;
-        }
+        int h = (128 * a + b) % 32768;
+        if(visit[h][0] == 0)
+            ++sum, visit[h][0] = 1;
     }
-    for(int k = 0; k < 149; k++)
-        indt[k] = inds[k];
     for(p = newstr2; *(p + 1)!= '\0'; p++)
     {
         int a = *p;
         int b = *(p + 1);
-        int h = (10 * a + b) % 149;
-        int i;
-        for(i = 0; i <= indt[h]; i++)
-            if(hash[h][i][0] == a && hash[h][i][1] == b)
-            {
-                if(i <= inds[h])
-                    join++;
-                break;
-            }
-        if(i > indt[h])
+        int h = (128 * a + b) % 32768;
+        if(visit[h][1] == 0)
         {
-            hash[h][i][0] = a;
-            hash[h][i][1] = b;
-            indt[h] = i;
-            sum++;
+            if(visit[h][0])
+                join++;
+            else
+                ++sum;
+            visit[h][1] = 1;
         }
     }
     float4 result = ((float)join) / sum;
