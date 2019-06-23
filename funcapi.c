@@ -1579,7 +1579,6 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
     bool visit[101][101] = {0};
     int temp;
 
-
     for(temp = 1, p = str1; *p != '\0'; temp++, p++)
         //s[temp] = (*p >= 97) ? *p - 32 : *p;
         {
@@ -1669,7 +1668,6 @@ Datum jaccard_index (PG_FUNCTION_ARGS)
     char *str1 = TextDatumGetCString(str_01);
     char *str2 = TextDatumGetCString(txt_02);
 
-
     char newstr1[120];
     char newstr2[120];
     char *temp = NULL;
@@ -1678,26 +1676,26 @@ Datum jaccard_index (PG_FUNCTION_ARGS)
     newstr1[0] = 4;
     for(k = 1, temp = str1; *temp != '\0'; temp++, k++)
         if(*temp >= 97 && *temp <= 122)
-            newstr1[k] = *temp - 64;
-        else if(*temp >= 32 && *temp <= 97)
             newstr1[k] = *temp - 32;
-        else
-            newstr1[k] = 66;
+        else if(*temp >= 0 && *temp <= 97)
+            newstr1[k] = *temp - 0;
+        else if(*temp >= 123 && *temp <= 128)
+            newstr1[k] = *temp - 26;
     newstr1[k] = 4;
     newstr1[k + 1] = '\0';
 
     newstr2[0] = 4;
     for(k = 1, temp = str2; *temp != '\0'; temp++, k++)
         if(*temp >= 97 && *temp <= 122)
-            newstr2[k] = *temp - 64;
-        else if(*temp >= 32 && *temp <= 97)
             newstr2[k] = *temp - 32;
-        else
-            newstr2[k] = 66;
+        else if(*temp >= 0 && *temp <= 97)
+            newstr2[k] = *temp - 0;
+        else if(*temp >= 123 && *temp <= 128)
+            newstr2[k] = *temp - 26;
     newstr2[k] = 4;
     newstr2[k + 1] = '\0';
 
-    bool visit[4900][2] = {0};
+    bool visit[10610][2] = {0};
     char *p = NULL;
     int sum = 0;
     int join = 0;
@@ -1705,7 +1703,7 @@ Datum jaccard_index (PG_FUNCTION_ARGS)
     {
         int a = *p;
         int b = *(p + 1);
-        int h = 67 * a + b;
+        int h = 103 * a + b;
         if(visit[h][0] == 0)
             ++sum, visit[h][0] = 1;
     }
@@ -1713,7 +1711,7 @@ Datum jaccard_index (PG_FUNCTION_ARGS)
     {
         int a = *p;
         int b = *(p + 1);
-        int h = 67 * a + b;
+        int h = 103 * a + b;
         if(visit[h][1] == 0)
         {
             if(visit[h][0])
