@@ -1580,7 +1580,6 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
     int temp;
 
     for(temp = 1, p = str1; *p != '\0'; temp++, p++)
-        //s[temp] = (*p >= 97) ? *p - 32 : *p;
         {
             int tmp = *p;
             if(tmp >= 97)
@@ -1588,11 +1587,9 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
             else
                 s[temp] = tmp;
         }
-
     len1 = temp;
 
     for(temp = 1, p = str2; *p != '\0'; temp++, p++)
-        //t[temp] = (*p >= 97) ? *p - 32 : *p;
         {
             int tmp = *p;
             if(tmp >= 97)
@@ -1653,10 +1650,7 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
         }
     }
     bool result;
-    if(i == len1 - 1 && j == len2 - 1)
-        result = 1;
-    else
-        result = 0;
+    result = i == len1 - 1 && j == len2 - 1;
     PG_RETURN_INT32(result);
 }
 
@@ -1668,31 +1662,37 @@ Datum jaccard_index (PG_FUNCTION_ARGS)
     char *str1 = TextDatumGetCString(str_01);
     char *str2 = TextDatumGetCString(txt_02);
 
-    char newstr1[120];
-    char newstr2[120];
+    char newstr1[100];
+    char newstr2[100];
     char *temp = NULL;
     int k;
 
-    newstr1[0] = 4;
+    newstr1[0] = '$';
     for(k = 1, temp = str1; *temp != '\0'; temp++, k++)
-        if(*temp >= 97 && *temp <= 122)
-            newstr1[k] = *temp - 32;
-        else if(*temp >= 0 && *temp <= 97)
-            newstr1[k] = *temp - 0;
-        else if(*temp >= 123 && *temp <= 128)
-            newstr1[k] = *temp - 26;
-    newstr1[k] = 4;
+    {
+        int tmp = *temp;
+        if(tmp >= 97 && tmp <= 122)
+            newstr1[k] = tmp - 32;
+        else if(tmp <= 96)
+            newstr1[k] = tmp;
+        else if(tmp >= 123 && tmp <= 128)
+            newstr1[k] = tmp - 26;
+    }
+    newstr1[k] = '$';
     newstr1[k + 1] = '\0';
 
-    newstr2[0] = 4;
+    newstr2[0] = '$';
     for(k = 1, temp = str2; *temp != '\0'; temp++, k++)
-        if(*temp >= 97 && *temp <= 122)
-            newstr2[k] = *temp - 32;
-        else if(*temp >= 0 && *temp <= 97)
-            newstr2[k] = *temp - 0;
-        else if(*temp >= 123 && *temp <= 128)
-            newstr2[k] = *temp - 26;
-    newstr2[k] = 4;
+    {
+        int tmp = *temp;
+        if(tmp >= 97 && tmp <= 122)
+            newstr2[k] = tmp - 32;
+        else if(tmp <= 96)
+            newstr2[k] = tmp;
+        else if(tmp >= 123 && tmp <= 128)
+            newstr2[k] = tmp - 26;
+    }
+    newstr2[k] = '$';
     newstr2[k + 1] = '\0';
 
     bool visit[10610][2] = {0};
