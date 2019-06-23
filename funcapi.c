@@ -1572,31 +1572,40 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
     char *str2 = TextDatumGetCString(txt_02);
     int len1 = 0, len2 = 0;
     char *p = NULL;
-    char s[150] = {0};
-    char t[150] = {0};
-    int que[20000][2];
-    int distance[150][150];//(1 + len1) * (1 + len2)
-    bool visit[150][150] = {0};
+    char s[100] = {0};
+    char t[100] = {0};
+    int que[10000][2];
+    int distance[101][101];//(1 + len1) * (1 + len2)
+    bool visit[101][101] = {0};
     int temp;
 
 
     for(temp = 1, p = str1; *p != '\0'; temp++, p++)
-        if(*p >= 97 && *p <= 122)
-            s[temp] = *p - 32;
-        else
-            s[temp] = *p;
+        //s[temp] = (*p >= 97) ? *p - 32 : *p;
+        {
+            int tmp = *p;
+            if(tmp >= 97)
+                s[temp] = tmp - 32;
+            else
+                s[temp] = tmp;
+        }
+
     len1 = temp;
 
     for(temp = 1, p = str2; *p != '\0'; temp++, p++)
-        if(*p >= 97 && *p <= 122)
-            t[temp] = *p - 32;
-        else
-            t[temp] = *p;
+        //t[temp] = (*p >= 97) ? *p - 32 : *p;
+        {
+            int tmp = *p;
+            if(tmp >= 97)
+                t[temp] = tmp - 32;
+            else
+                t[temp] = tmp;
+        }
     len2 = temp;
 
     for(int i = 0; i < len1; i++)
         for(int j = 0; j < len2; j++)
-            distance[i][j] = -1;
+            distance[i][j] = 100;
 
     int front = 0, end = 0;
     que[end][0] = 0;
@@ -1610,10 +1619,7 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
         j = que[front++][1];
         if(j + 1 < len2)
         {
-            if(distance[i][j + 1] != -1)
-                distance[i][j + 1] = min(distance[i][j + 1], distance[i][j] + 1);
-            else
-                distance[i][j + 1] = distance[i][j] + 1;
+            distance[i][j + 1] = min(distance[i][j + 1], distance[i][j] + 1);
             if(distance[i][j + 1] < tex && visit[i][j + 1] == 0)
             {
                 que[end][0] = i;
@@ -1624,10 +1630,7 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
 
         if(i + 1 < len1)
         {
-            if(distance[i + 1][j] != -1)
-                distance[i + 1][j] = min(distance[i + 1][j], distance[i][j] + 1);
-            else
-                distance[i + 1][j] = distance[i][j] + 1;
+            distance[i + 1][j] = min(distance[i + 1][j], distance[i][j] + 1);
             if(distance[i + 1][j] < tex && visit[i + 1][j] == 0)
             {
                 que[end][0] = i + 1;
@@ -1638,20 +1641,10 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
 
         if(i + 1 < len1 && j + 1 < len2)
         {
-            if(distance[i + 1][j + 1] != -1)
-            {
-                if(s[i + 1] == t[j + 1])
-                    distance[i + 1][j + 1] = min(distance[i][j], distance[i + 1][j + 1]);
-                else
-                    distance[i + 1][j + 1] = min(distance[i][j] + 1, distance[i][j]);
-            }
+            if(s[i + 1] == t[j + 1])
+                distance[i + 1][j + 1] = min(distance[i][j], distance[i + 1][j + 1]);
             else
-            {
-                if(s[i + 1] == t[j + 1])
-                    distance[i + 1][j + 1] = distance[i][j];
-                else
-                    distance[i + 1][j + 1] = distance[i][j] + 1;
-            }
+                distance[i + 1][j + 1] = min(distance[i][j] + 1, distance[i + 1][j + 1]);
             if(distance[i + 1][j + 1] < tex && visit[i + 1][j + 1] == 0)
             {
                 que[end][0] = i + 1;
@@ -1682,25 +1675,29 @@ Datum jaccard_index (PG_FUNCTION_ARGS)
     char *temp = NULL;
     int k;
 
-    newstr1[0] = '$';
+    newstr1[0] = 4;
     for(k = 1, temp = str1; *temp != '\0'; temp++, k++)
         if(*temp >= 97 && *temp <= 122)
+            newstr1[k] = *temp - 64;
+        else if(*temp >= 32 && *temp <= 97)
             newstr1[k] = *temp - 32;
         else
-            newstr1[k] = *temp;
-    newstr1[k] = '$';
+            newstr1[k] = 66;
+    newstr1[k] = 4;
     newstr1[k + 1] = '\0';
 
-    newstr2[0] = '$';
+    newstr2[0] = 4;
     for(k = 1, temp = str2; *temp != '\0'; temp++, k++)
         if(*temp >= 97 && *temp <= 122)
+            newstr2[k] = *temp - 64;
+        else if(*temp >= 32 && *temp <= 97)
             newstr2[k] = *temp - 32;
         else
-            newstr2[k] = *temp;
-    newstr2[k] = '$';
+            newstr2[k] = 66;
+    newstr2[k] = 4;
     newstr2[k + 1] = '\0';
 
-    bool visit[32768][2] = {0};
+    bool visit[4900][2] = {0};
     char *p = NULL;
     int sum = 0;
     int join = 0;
@@ -1708,7 +1705,7 @@ Datum jaccard_index (PG_FUNCTION_ARGS)
     {
         int a = *p;
         int b = *(p + 1);
-        int h = (128 * a + b) % 32768;
+        int h = 67 * a + b;
         if(visit[h][0] == 0)
             ++sum, visit[h][0] = 1;
     }
@@ -1716,7 +1713,7 @@ Datum jaccard_index (PG_FUNCTION_ARGS)
     {
         int a = *p;
         int b = *(p + 1);
-        int h = (128 * a + b) % 32768;
+        int h = 67 * a + b;
         if(visit[h][1] == 0)
         {
             if(visit[h][0])
