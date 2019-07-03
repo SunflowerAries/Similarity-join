@@ -2,9 +2,9 @@
  *
  * funcapi.c
  *	  Utility and convenience functions for fmgr functions that return
- *	  sets and/or composite types, or deal with VARIADIC inputs.
+ *	  sets and/or composite types.
  *
- * Copyright (c) 2002-2017, PostgreSQL Global Development Group
+ * Copyright (c) 2002-2011, PostgreSQL Global Development Group
  *
  * IDENTIFICATION
  *	  src/backend/utils/fmgr/funcapi.c
@@ -13,7 +13,7 @@
  */
 #include "postgres.h"
 
-#include "access/htup_details.h"
+#include "access/heapam.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_proc.h"
 #include "catalog/pg_type.h"
@@ -24,12 +24,10 @@
 #include "utils/builtins.h"
 #include "utils/lsyscache.h"
 #include "utils/memutils.h"
-#include "utils/regproc.h"
-#include "utils/rel.h"
 #include "utils/syscache.h"
 #include "utils/typcache.h"
 
-#define min(x, y) (x > y ? y : x)
+
 static void shutdown_MultiFuncCall(Datum arg);
 static TypeFuncClass internal_get_result_type(Oid funcid,
 						 Node *call_expr,
@@ -74,7 +72,9 @@ init_MultiFuncCall(PG_FUNCTION_ARGS)
 		 */
 		multi_call_ctx = AllocSetContextCreate(fcinfo->flinfo->fn_mcxt,
 											   "SRF multi-call context",
-											   ALLOCSET_SMALL_SIZES);
+											   ALLOCSET_SMALL_MINSIZE,
+											   ALLOCSET_SMALL_INITSIZE,
+											   ALLOCSET_SMALL_MAXSIZE);
 
 		/*
 		 * Allocate suitably long-lived space and zero it
@@ -135,7 +135,7 @@ per_MultiFuncCall(PG_FUNCTION_ARGS)
 	 * FuncCallContext is pointing to it), but in most usage patterns the
 	 * tuples stored in it will be in the function's per-tuple context. So at
 	 * the beginning of each call, the Slot will hold a dangling pointer to an
-	 * already-recycled tuple.  We clear it out here.
+	 * already-recycled tuple.	We clear it out here.
 	 *
 	 * Note: use of retval->slot is obsolete as of 8.0, and we expect that it
 	 * will always be NULL.  This is just here for backwards compatibility in
@@ -191,13 +191,13 @@ shutdown_MultiFuncCall(Datum arg)
  *		Given a function's call info record, determine the kind of datatype
  *		it is supposed to return.  If resultTypeId isn't NULL, *resultTypeId
  *		receives the actual datatype OID (this is mainly useful for scalar
- *		result types).  If resultTupleDesc isn't NULL, *resultTupleDesc
+ *		result types).	If resultTupleDesc isn't NULL, *resultTupleDesc
  *		receives a pointer to a TupleDesc when the result is of a composite
  *		type, or NULL when it's a scalar result.
  *
  * One hard case that this handles is resolution of actual rowtypes for
  * functions returning RECORD (from either the function's OUT parameter
- * list, or a ReturnSetInfo context node).  TYPEFUNC_RECORD is returned
+ * list, or a ReturnSetInfo context node).	TYPEFUNC_RECORD is returned
  * only when we couldn't resolve the actual rowtype for lack of information.
  *
  * The other hard case that this handles is resolution of polymorphism.
@@ -280,7 +280,7 @@ get_func_result_type(Oid functionId,
 /*
  * internal_get_result_type -- workhorse code implementing all the above
  *
- * funcid must always be supplied.  call_expr and rsinfo can be NULL if not
+ * funcid must always be supplied.	call_expr and rsinfo can be NULL if not
  * available.  We will return TYPEFUNC_RECORD, and store NULL into
  * *resultTupleDesc, if we cannot deduce the complete result rowtype from
  * the available information.
@@ -407,13 +407,11 @@ resolve_polymorphic_tupdesc(TupleDesc tupdesc, oidvector *declared_args,
 	int			nargs = declared_args->dim1;
 	bool		have_anyelement_result = false;
 	bool		have_anyarray_result = false;
-	bool		have_anyrange_result = false;
 	bool		have_anynonarray = false;
 	bool		have_anyenum = false;
 	Oid			anyelement_type = InvalidOid;
 	Oid			anyarray_type = InvalidOid;
-	Oid			anyrange_type = InvalidOid;
-	Oid			anycollation = InvalidOid;
+	Oid			anycollation;
 	int			i;
 
 	/* See if there are any polymorphic outputs; quick out if not */
@@ -435,19 +433,15 @@ resolve_polymorphic_tupdesc(TupleDesc tupdesc, oidvector *declared_args,
 				have_anyelement_result = true;
 				have_anyenum = true;
 				break;
-			case ANYRANGEOID:
-				have_anyrange_result = true;
-				break;
 			default:
 				break;
 		}
 	}
-	if (!have_anyelement_result && !have_anyarray_result &&
-		!have_anyrange_result)
+	if (!have_anyelement_result && !have_anyarray_result)
 		return true;
 
 	/*
-	 * Otherwise, extract actual datatype(s) from input arguments.  (We assume
+	 * Otherwise, extract actual datatype(s) from input arguments.	(We assume
 	 * the parser already validated consistency of the arguments.)
 	 */
 	if (!call_expr)
@@ -467,51 +461,24 @@ resolve_polymorphic_tupdesc(TupleDesc tupdesc, oidvector *declared_args,
 				if (!OidIsValid(anyarray_type))
 					anyarray_type = get_call_expr_argtype(call_expr, i);
 				break;
-			case ANYRANGEOID:
-				if (!OidIsValid(anyrange_type))
-					anyrange_type = get_call_expr_argtype(call_expr, i);
-				break;
 			default:
 				break;
 		}
 	}
 
 	/* If nothing found, parser messed up */
-	if (!OidIsValid(anyelement_type) && !OidIsValid(anyarray_type) &&
-		!OidIsValid(anyrange_type))
+	if (!OidIsValid(anyelement_type) && !OidIsValid(anyarray_type))
 		return false;
 
-	/* If needed, deduce one polymorphic type from others */
+	/* If needed, deduce one polymorphic type from the other */
 	if (have_anyelement_result && !OidIsValid(anyelement_type))
-	{
-		if (OidIsValid(anyarray_type))
-			anyelement_type = resolve_generic_type(ANYELEMENTOID,
-												   anyarray_type,
-												   ANYARRAYOID);
-		if (OidIsValid(anyrange_type))
-		{
-			Oid			subtype = resolve_generic_type(ANYELEMENTOID,
-													   anyrange_type,
-													   ANYRANGEOID);
-
-			/* check for inconsistent array and range results */
-			if (OidIsValid(anyelement_type) && anyelement_type != subtype)
-				return false;
-			anyelement_type = subtype;
-		}
-	}
-
+		anyelement_type = resolve_generic_type(ANYELEMENTOID,
+											   anyarray_type,
+											   ANYARRAYOID);
 	if (have_anyarray_result && !OidIsValid(anyarray_type))
 		anyarray_type = resolve_generic_type(ANYARRAYOID,
 											 anyelement_type,
 											 ANYELEMENTOID);
-
-	/*
-	 * We can't deduce a range type from other polymorphic inputs, because
-	 * there may be multiple range types for the same subtype.
-	 */
-	if (have_anyrange_result && !OidIsValid(anyrange_type))
-		return false;
 
 	/* Enforce ANYNONARRAY if needed */
 	if (have_anynonarray && type_is_array(anyelement_type))
@@ -523,15 +490,9 @@ resolve_polymorphic_tupdesc(TupleDesc tupdesc, oidvector *declared_args,
 
 	/*
 	 * Identify the collation to use for polymorphic OUT parameters. (It'll
-	 * necessarily be the same for both anyelement and anyarray.)  Note that
-	 * range types are not collatable, so any possible internal collation of a
-	 * range type is not considered here.
+	 * necessarily be the same for both anyelement and anyarray.)
 	 */
-	if (OidIsValid(anyelement_type))
-		anycollation = get_typcollation(anyelement_type);
-	else if (OidIsValid(anyarray_type))
-		anycollation = get_typcollation(anyarray_type);
-
+	anycollation = get_typcollation(OidIsValid(anyelement_type) ? anyelement_type : anyarray_type);
 	if (OidIsValid(anycollation))
 	{
 		/*
@@ -568,14 +529,6 @@ resolve_polymorphic_tupdesc(TupleDesc tupdesc, oidvector *declared_args,
 								   0);
 				TupleDescInitEntryCollation(tupdesc, i + 1, anycollation);
 				break;
-			case ANYRANGEOID:
-				TupleDescInitEntry(tupdesc, i + 1,
-								   NameStr(tupdesc->attrs[i]->attname),
-								   anyrange_type,
-								   -1,
-								   0);
-				/* no collation should be attached to a range type */
-				break;
 			default:
 				break;
 		}
@@ -599,10 +552,8 @@ resolve_polymorphic_argtypes(int numargs, Oid *argtypes, char *argmodes,
 {
 	bool		have_anyelement_result = false;
 	bool		have_anyarray_result = false;
-	bool		have_anyrange_result = false;
 	Oid			anyelement_type = InvalidOid;
 	Oid			anyarray_type = InvalidOid;
-	Oid			anyrange_type = InvalidOid;
 	int			inargno;
 	int			i;
 
@@ -646,21 +597,6 @@ resolve_polymorphic_argtypes(int numargs, Oid *argtypes, char *argmodes,
 					argtypes[i] = anyarray_type;
 				}
 				break;
-			case ANYRANGEOID:
-				if (argmode == PROARGMODE_OUT || argmode == PROARGMODE_TABLE)
-					have_anyrange_result = true;
-				else
-				{
-					if (!OidIsValid(anyrange_type))
-					{
-						anyrange_type = get_call_expr_argtype(call_expr,
-															  inargno);
-						if (!OidIsValid(anyrange_type))
-							return false;
-					}
-					argtypes[i] = anyrange_type;
-				}
-				break;
 			default:
 				break;
 		}
@@ -669,46 +605,22 @@ resolve_polymorphic_argtypes(int numargs, Oid *argtypes, char *argmodes,
 	}
 
 	/* Done? */
-	if (!have_anyelement_result && !have_anyarray_result &&
-		!have_anyrange_result)
+	if (!have_anyelement_result && !have_anyarray_result)
 		return true;
 
 	/* If no input polymorphics, parser messed up */
-	if (!OidIsValid(anyelement_type) && !OidIsValid(anyarray_type) &&
-		!OidIsValid(anyrange_type))
+	if (!OidIsValid(anyelement_type) && !OidIsValid(anyarray_type))
 		return false;
 
-	/* If needed, deduce one polymorphic type from others */
+	/* If needed, deduce one polymorphic type from the other */
 	if (have_anyelement_result && !OidIsValid(anyelement_type))
-	{
-		if (OidIsValid(anyarray_type))
-			anyelement_type = resolve_generic_type(ANYELEMENTOID,
-												   anyarray_type,
-												   ANYARRAYOID);
-		if (OidIsValid(anyrange_type))
-		{
-			Oid			subtype = resolve_generic_type(ANYELEMENTOID,
-													   anyrange_type,
-													   ANYRANGEOID);
-
-			/* check for inconsistent array and range results */
-			if (OidIsValid(anyelement_type) && anyelement_type != subtype)
-				return false;
-			anyelement_type = subtype;
-		}
-	}
-
+		anyelement_type = resolve_generic_type(ANYELEMENTOID,
+											   anyarray_type,
+											   ANYARRAYOID);
 	if (have_anyarray_result && !OidIsValid(anyarray_type))
 		anyarray_type = resolve_generic_type(ANYARRAYOID,
 											 anyelement_type,
 											 ANYELEMENTOID);
-
-	/*
-	 * We can't deduce a range type from other polymorphic inputs, because
-	 * there may be multiple range types for the same subtype.
-	 */
-	if (have_anyrange_result && !OidIsValid(anyrange_type))
-		return false;
 
 	/* XXX do we need to enforce ANYNONARRAY or ANYENUM here?  I think not */
 
@@ -724,9 +636,6 @@ resolve_polymorphic_argtypes(int numargs, Oid *argtypes, char *argmodes,
 				break;
 			case ANYARRAYOID:
 				argtypes[i] = anyarray_type;
-				break;
-			case ANYRANGEOID:
-				argtypes[i] = anyrange_type;
 				break;
 			default:
 				break;
@@ -754,7 +663,6 @@ get_type_func_class(Oid typid)
 		case TYPTYPE_BASE:
 		case TYPTYPE_DOMAIN:
 		case TYPTYPE_ENUM:
-		case TYPTYPE_RANGE:
 			return TYPEFUNC_SCALAR;
 		case TYPTYPE_PSEUDO:
 			if (typid == RECORDOID)
@@ -814,7 +722,7 @@ get_func_arg_info(HeapTuple procTup,
 		 * deconstruct_array() since the array data is just going to look like
 		 * a C array of values.
 		 */
-		arr = DatumGetArrayTypeP(proallargtypes);	/* ensure not toasted */
+		arr = DatumGetArrayTypeP(proallargtypes);		/* ensure not toasted */
 		numargs = ARR_DIMS(arr)[0];
 		if (ARR_NDIM(arr) != 1 ||
 			numargs < 0 ||
@@ -876,48 +784,6 @@ get_func_arg_info(HeapTuple procTup,
 	return numargs;
 }
 
-/*
- * get_func_trftypes
- *
- * Returns the number of transformed types used by function.
- */
-int
-get_func_trftypes(HeapTuple procTup,
-				  Oid **p_trftypes)
-{
-	Datum		protrftypes;
-	ArrayType  *arr;
-	int			nelems;
-	bool		isNull;
-
-	protrftypes = SysCacheGetAttr(PROCOID, procTup,
-								  Anum_pg_proc_protrftypes,
-								  &isNull);
-	if (!isNull)
-	{
-		/*
-		 * We expect the arrays to be 1-D arrays of the right types; verify
-		 * that.  For the OID and char arrays, we don't need to use
-		 * deconstruct_array() since the array data is just going to look like
-		 * a C array of values.
-		 */
-		arr = DatumGetArrayTypeP(protrftypes);	/* ensure not toasted */
-		nelems = ARR_DIMS(arr)[0];
-		if (ARR_NDIM(arr) != 1 ||
-			nelems < 0 ||
-			ARR_HASNULL(arr) ||
-			ARR_ELEMTYPE(arr) != OIDOID)
-			elog(ERROR, "protrftypes is not a 1-D Oid array");
-		Assert(nelems >= ((Form_pg_proc) GETSTRUCT(procTup))->pronargs);
-		*p_trftypes = (Oid *) palloc(nelems * sizeof(Oid));
-		memcpy(*p_trftypes, ARR_DATA_PTR(arr),
-			   nelems * sizeof(Oid));
-
-		return nelems;
-	}
-	else
-		return 0;
-}
 
 /*
  * get_func_input_arg_names
@@ -953,7 +819,7 @@ get_func_input_arg_names(Datum proargnames, Datum proargmodes,
 	 * For proargmodes, we don't need to use deconstruct_array() since the
 	 * array data is just going to look like a C array of values.
 	 */
-	arr = DatumGetArrayTypeP(proargnames);	/* ensure not toasted */
+	arr = DatumGetArrayTypeP(proargnames);		/* ensure not toasted */
 	if (ARR_NDIM(arr) != 1 ||
 		ARR_HASNULL(arr) ||
 		ARR_ELEMTYPE(arr) != TEXTOID)
@@ -1200,7 +1066,7 @@ build_function_result_tupdesc_d(Datum proallargtypes,
 		ARR_ELEMTYPE(arr) != OIDOID)
 		elog(ERROR, "proallargtypes is not a 1-D Oid array");
 	argtypes = (Oid *) ARR_DATA_PTR(arr);
-	arr = DatumGetArrayTypeP(proargmodes);	/* ensure not toasted */
+	arr = DatumGetArrayTypeP(proargmodes);		/* ensure not toasted */
 	if (ARR_NDIM(arr) != 1 ||
 		ARR_DIMS(arr)[0] != numargs ||
 		ARR_HASNULL(arr) ||
@@ -1246,7 +1112,8 @@ build_function_result_tupdesc_d(Datum proallargtypes,
 		if (pname == NULL || pname[0] == '\0')
 		{
 			/* Parameter is not named, so gin up a column name */
-			pname = psprintf("column%d", numoutargs + 1);
+			pname = (char *) palloc(32);
+			snprintf(pname, 32, "column%d", numoutargs + 1);
 		}
 		outargnames[numoutargs] = pname;
 		numoutargs++;
@@ -1369,7 +1236,7 @@ TypeGetTupleDesc(Oid typeoid, List *colaliases)
 		if (list_length(colaliases) != 1)
 			ereport(ERROR,
 					(errcode(ERRCODE_DATATYPE_MISMATCH),
-					 errmsg("number of aliases does not match number of columns")));
+			  errmsg("number of aliases does not match number of columns")));
 
 		/* OK, get the column alias */
 		attname = strVal(linitial(colaliases));
@@ -1398,123 +1265,13 @@ TypeGetTupleDesc(Oid typeoid, List *colaliases)
 	return tupdesc;
 }
 
-/*
- * extract_variadic_args
- *
- * Extract a set of argument values, types and NULL markers for a given
- * input function which makes use of a VARIADIC input whose argument list
- * depends on the caller context. When doing a VARIADIC call, the caller
- * has provided one argument made of an array of values, so deconstruct the
- * array data before using it for the next processing. If no VARIADIC call
- * is used, just fill in the status data based on all the arguments given
- * by the caller.
- *
- * This function returns the number of arguments generated, or -1 in the
- * case of "VARIADIC NULL".
- */
-int
-extract_variadic_args(FunctionCallInfo fcinfo, int variadic_start,
-					  bool convert_unknown, Datum **args, Oid **types,
-					  bool **nulls)
-{
-	bool		variadic = get_fn_expr_variadic(fcinfo->flinfo);
-	Datum	   *args_res;
-	bool	   *nulls_res;
-	Oid		   *types_res;
-	int			nargs, i;
-
-	*args = NULL;
-	*types = NULL;
-	*nulls = NULL;
-
-	if (variadic)
-	{
-		ArrayType  *array_in;
-		Oid			element_type;
-		bool		typbyval;
-		char		typalign;
-		int16		typlen;
-
-		Assert(PG_NARGS() == variadic_start + 1);
-
-		if (PG_ARGISNULL(variadic_start))
-			return -1;
-
-		array_in = PG_GETARG_ARRAYTYPE_P(variadic_start);
-		element_type = ARR_ELEMTYPE(array_in);
-
-		get_typlenbyvalalign(element_type,
-							 &typlen, &typbyval, &typalign);
-		deconstruct_array(array_in, element_type, typlen, typbyval,
-						  typalign, &args_res, &nulls_res,
-						  &nargs);
-
-		/* All the elements of the array have the same type */
-		types_res = (Oid *) palloc0(nargs * sizeof(Oid));
-		for (i = 0; i < nargs; i++)
-			types_res[i] = element_type;
-	}
-	else
-	{
-		nargs = PG_NARGS() - variadic_start;
-		Assert (nargs > 0);
-		nulls_res = (bool *) palloc0(nargs * sizeof(bool));
-		args_res = (Datum *) palloc0(nargs * sizeof(Datum));
-		types_res = (Oid *) palloc0(nargs * sizeof(Oid));
-
-		for (i = 0; i < nargs; i++)
-		{
-			nulls_res[i] = PG_ARGISNULL(i + variadic_start);
-			types_res[i] = get_fn_expr_argtype(fcinfo->flinfo,
-											   i + variadic_start);
-
-			/*
-			 * Turn a constant (more or less literal) value that's of unknown
-			 * type into text if required . Unknowns come in as a cstring
-			 * pointer.
-			 * Note: for functions declared as taking type "any", the parser
-			 * will not do any type conversion on unknown-type literals (that
-			 * is, undecorated strings or NULLs).
-			 */
-			if (convert_unknown &&
-				types_res[i] == UNKNOWNOID &&
-				get_fn_expr_arg_stable(fcinfo->flinfo, i + variadic_start))
-			{
-				types_res[i] = TEXTOID;
-
-				if (PG_ARGISNULL(i + variadic_start))
-					args_res[i] = (Datum) 0;
-				else
-					args_res[i] =
-						CStringGetTextDatum(PG_GETARG_POINTER(i + variadic_start));
-			}
-			else
-			{
-				/* no conversion needed, just take the datum as given */
-				args_res[i] = PG_GETARG_DATUM(i + variadic_start);
-			}
-
-			if (!OidIsValid(types_res[i]) ||
-				(convert_unknown && types_res[i] == UNKNOWNOID))
-				ereport(ERROR,
-						(errcode(ERRCODE_INVALID_PARAMETER_VALUE),
-						 errmsg("could not determine data type for argument %d",
-								i + 1)));
-		}
-	}
-
-	/* Fill in results */
-	*args = args_res;
-	*nulls = nulls_res;
-	*types = types_res;
-
-	return nargs;
-}
-
+#define min(x, y) (x > y ? y : x)
 int mymin(int a, int b, int c)
 {
     return min(min(a, b), c);
 }
+
+
 
 Datum levenshtein_distance(PG_FUNCTION_ARGS)
 {
@@ -1572,10 +1329,10 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
     char *str2 = TextDatumGetCString(txt_02);
     int len1 = 0, len2 = 0;
     char *p = NULL;
-    char s[100] = {0};
-    char t[100] = {0};
+    char s[100] ;
+    char t[100] ;
     int que[10000][2];
-    int distance[101][101];//(1 + len1) * (1 + len2)
+    int distance[101][101]=[100];//(1 + len1) * (1 + len2)
     bool visit[101][101] = {0};
     int temp;
 
@@ -1599,9 +1356,9 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
         }
     len2 = temp;
 
-    for(int i = 0; i < len1; i++)
-        for(int j = 0; j < len2; j++)
-            distance[i][j] = 100;
+    // for(int i = 0; i < len1; i++)
+    //     for(int j = 0; j < len2; j++)
+    //         distance[i][j] = 100;
 
     int front = 0, end = 0;
     que[end][0] = 0;
@@ -1649,8 +1406,7 @@ Datum levenshtein_distance_optimize(PG_FUNCTION_ARGS)
             }
         }
     }
-    bool result;
-    result = i == len1 - 1 && j == len2 - 1;
+    bool result = i == len1 - 1 && j == len2 - 1;
     PG_RETURN_INT32(result);
 }
 
@@ -1662,65 +1418,162 @@ Datum jaccard_index (PG_FUNCTION_ARGS)
     char *str1 = TextDatumGetCString(str_01);
     char *str2 = TextDatumGetCString(txt_02);
 
-    char newstr1[100];
-    char newstr2[100];
+    int newstr1[110];
+    int newstr2[110];
     char *temp = NULL;
     int k;
 
-    newstr1[0] = '$';
-    for(k = 1, temp = str1; *temp != '\0'; temp++, k++)
+    newstr1[0] = 4;
+    for(k = 1, temp = str1; *temp != '\0'; temp++)
     {
-        int tmp = *temp;
-        if(tmp >= 97 && tmp <= 122)
-            newstr1[k] = tmp - 32;
-        else if(tmp <= 96)
-            newstr1[k] = tmp;
-        else if(tmp >= 123 && tmp <= 128)
-            newstr1[k] = tmp - 26;
-    }
-    newstr1[k] = '$';
-    newstr1[k + 1] = '\0';
+		int tp=*temp;
+		if(tp >= 97)
+            newstr1[k] = tp - 64;
+        // else if(tp >= 32 && tp <= 90)
+        else if(tp >= 32)
+            newstr1[k] = tp - 32;
+		else
+		{
+			temp++;
+			continue;
+		}
+		k++;
+	}
+    newstr1[k] = 4;
+    newstr1[k + 1] = 65;
 
-    newstr2[0] = '$';
-    for(k = 1, temp = str2; *temp != '\0'; temp++, k++)
+    newstr2[0] = 4;
+    for(k = 1, temp = str2; *temp != '\0'; temp++)
     {
-        int tmp = *temp;
-        if(tmp >= 97 && tmp <= 122)
-            newstr2[k] = tmp - 32;
-        else if(tmp <= 96)
-            newstr2[k] = tmp;
-        else if(tmp >= 123 && tmp <= 128)
-            newstr2[k] = tmp - 26;
-    }
-    newstr2[k] = '$';
-    newstr2[k + 1] = '\0';
+		int tp=*temp;
+		if(tp >= 97)
+            newstr2[k] = tp - 64;
+        // else if(tp >= 32 && tp <= 90)
+        else if(tp >= 32)
+            newstr2[k] = tp - 32;
+		else
+		{
+			temp++;
+			continue;
+		}
+		k++;
+	}
 
-    bool visit[10610][2] = {0};
-    char *p = NULL;
+    newstr2[k] = 4;
+    newstr2[k + 1] = 65;
+	
+    // bool visit[4000][2]={0};
+    // int *p = NULL;
+    // int sum = 0;
+    // int join = 0;
+    // for(p = newstr1; *(p + 1)!= 65; p++)
+    // {
+    //     int h = (60 * (*p) + *(p+1));
+    //     if(!visit[h][0])
+    //         ++sum, visit[h][0] = 1;
+    // }
+    // for(p = newstr2; *(p + 1)!= 65; p++)
+    // {
+    //     int h = (60 * (*p) + *(p+1));
+    //     if(!visit[h][1])
+    //     {
+    //         if(visit[h][0])
+    //             join++;
+    //         else
+    //             ++sum;
+    //         visit[h][1] = 1;
+    //     }
+    // }
+	int visit[3800]={0};
+    int *p = NULL;
     int sum = 0;
     int join = 0;
-    for(p = newstr1; *(p + 1)!= '\0'; p++)
+    for(p = newstr1; *(p + 1)!= 65; p++)
     {
-        int a = *p;
-        int b = *(p + 1);
-        int h = 103 * a + b;
-        if(visit[h][0] == 0)
-            ++sum, visit[h][0] = 1;
+        int h = (60 * (*p) + *(p+1));
+        if(!visit[h])
+            ++sum, visit[h] = 1;
     }
-    for(p = newstr2; *(p + 1)!= '\0'; p++)
+    
+	for(p = newstr2; *(p + 1)!= 65; p++)
     {
-        int a = *p;
-        int b = *(p + 1);
-        int h = 103 * a + b;
-        if(visit[h][1] == 0)
-        {
-            if(visit[h][0])
-                join++;
-            else
-                ++sum;
-            visit[h][1] = 1;
-        }
+        int h = (60 * (*p) + *(p+1));
+        switch(visit[h]){
+			case 0:
+				sum++;visit[h]=2;break;
+			case 1:
+				join++;visit[h]=2;break;
+		}
     }
     float4 result = ((float)join) / sum;
     PG_RETURN_FLOAT4(result);
 }
+
+
+// Datum jaccard_index (PG_FUNCTION_ARGS)
+// {
+//     text *str_01 = PG_GETARG_DATUM(0);
+//     text *txt_02 = PG_GETARG_DATUM(1);
+
+//     char *str1 = TextDatumGetCString(str_01);
+//     char *str2 = TextDatumGetCString(txt_02);
+
+//     int newstr1[110];
+//     int newstr2[110];
+//     char *temp = NULL;
+//     int k;
+
+//     newstr1[0] = 4;
+//     for(k = 1, temp = str1; *temp != '\0'; temp++, k++)
+//     {
+// 		int tp=*temp;
+// 		if(tp >= 97 && tp <= 122)
+//             newstr1[k] = tp - 32;
+//         else if(tp >= 0 && tp <= 97)
+//             newstr1[k] = tp - 0;
+//         else if(tp >= 123 && tp <= 128)
+//             newstr1[k] = *temp - 26;
+// 	}
+//     newstr1[k] = 4;
+//     newstr1[k + 1] = '\0';
+
+//     newstr2[0] = 4;
+// 	for(k = 1, temp = str2; *temp != '\0'; temp++, k++)
+//     {
+// 		int tp=*temp;
+// 		if(tp >= 97 && tp <= 122)
+//             newstr2[k] = tp - 32;
+//         else if(tp >= 0 && tp <= 97)
+//             newstr2[k] = tp - 0;
+//         else if(tp >= 123 && tp <= 128)
+//             newstr2[k] = *temp - 26;
+// 	}
+
+//     newstr2[k] = 4;
+//     newstr2[k + 1] = '\0';
+	
+//     bool visit[10610][2]={0};
+//     int *p = NULL;
+//     int sum = 0;
+//     int join = 0;
+//     for(p = newstr1; *(p + 1)!= '\0'; p++)
+//     {
+//         int h = 103 * (*p) + *(p+1);
+//         if(!visit[h][0])
+//             ++sum, visit[h][0] = 1;
+//     }
+//     for(p = newstr2; *(p + 1)!= '\0'; p++)
+//     {
+//         int h = 103 * (*p) + *(p+1);
+//         if(!visit[h][1])
+//         {
+//             if(visit[h][0])
+//                 join++;
+//             else
+//                 ++sum;
+//             visit[h][1] = 1;
+//         }
+//     }
+//     float4 result = ((float)join) / sum;
+//     PG_RETURN_FLOAT4(result);
+// }
